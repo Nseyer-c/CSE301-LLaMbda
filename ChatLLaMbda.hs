@@ -14,6 +14,19 @@ import PySupport
 -- (This will make it easier to look up words in the lexicon.)
 stdize (c:cs) = toUpper c : map toLower cs
 
+
+-- Convert a lambda expression into Python code
+pythonExp :: [(Var, PythonCode)] -> LExp -> String
+pythonExp env (V x) =
+  case lookup x env of
+    Just code -> "(" ++ text code ++ ")"
+    Nothing -> x
+pythonExp env (A e1 e2) =
+  "(" ++ pythonExp env e1 ++ ")(" ++ pythonExp env e2 ++ ")"
+pythonExp env (L x e) =
+  "(lambda " ++ x ++ ": " ++ pythonExp env e ++ ")"
+
+
 -- read-eval-print-loop
 repl :: Lexicon PythonCode -> PythonHandle -> IO ()
 repl elx phandle = do
@@ -31,25 +44,40 @@ repl elx phandle = do
     else putStrLn "That is not a well-formed sentence"
   -}
 
-  -- Find all possible grammatical types for each numbered word
-  let wordTypes (w, i) = [(w ++ "_" ++ show i, tp) | (w', tp, _) <- items elx, w' == w]
-      -- Get the possible types for each word
-      possibleTypes = [wordTypes (w, i) | (w, i) <- zip ws [1..]]
-      -- Generate all combinations of grammatical types
-      combinations = sequence possibleTypes
-      -- Construct all possible lambda expressions
-      expressions = concat [Lambek.der_rinv ts (stp elx) | ts <- combinations]
+  -- Find all possible lexicon entries for each numbered word
+  let wordEntries (w, i) =
+        [(w ++ "_" ++ show i, tp, sem)
+        | (w', tp, sem) <- items elx, w' == w]
+      -- Get the possible entries for each word
+      possibleEntries = [wordEntries wi | wi <- zip ws [0..]]
+      -- Generate all combinations of lexicon entries
+      combinations = sequence possibleEntries
+      -- Construct derivations with their semantic values
+      interpretations =
+        [(e, [(v, sem) | (v, _, sem) <- entries])
+        | entries <- combinations
+        , e <- Lambek.der_rinv [(v, tp) | (v, tp, _) <- entries] (stp elx)]
 
-  -- Display the resulting lambda expressions
-  if null expressions
+  -- Display the interpretations
+  if null interpretations
     then putStrLn "That is not a well-formed sentence"
     else do
-      putStrLn "I can derive your sentence as follows:"
-      mapM_ printLExp expressions
+      if length interpretations > 1
+        then putStrLn "That sentence is ambiguous"
+        else return ()
+      mapM_ (showInterpretation phandle (length interpretations > 1)) interpretations
 
   -- repeat
   repl elx phandle
-      
+
+ -- Evaluate and display one possible interpretation
+showInterpretation :: PythonHandle -> Bool -> (LExp, [(Var, PythonCode)]) -> IO ()
+showInterpretation phandle ambiguous (e, env) = do
+  result <- runPythonCode phandle (PCode ("print(" ++ pythonExp env e ++ ")"))
+  if ambiguous
+    then putStrLn ("Sense [" ++ prettyLExp e ++ "]: " ++ result)
+    else putStrLn result
+
 main = do
   -- send console output immediately to the user
   hSetBuffering stdout NoBuffering
